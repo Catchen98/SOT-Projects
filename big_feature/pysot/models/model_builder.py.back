@@ -1,0 +1,207 @@
+# Copyright (c) SenseTime. All Rights Reserved.
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from IPython import embed
+import numpy as np
+import cv2
+import os
+from pysot.core.config import cfg
+from pysot.models.loss import select_cross_entropy_loss, weight_l1_loss, pixel_wise_loss, discriminate_loss
+from pysot.models.backbone import get_backbone
+from pysot.models.disentangle import get_disentangle
+from pysot.models.reconstruction import get_decoder
+from pysot.models.discriminate import get_discriminator
+from pysot.models.head import get_rpn_head, get_mask_head, get_refine_head
+from pysot.models.neck import get_neck
+
+class ModelBuilder(nn.Module):
+    def __init__(self):
+        super(ModelBuilder, self).__init__()
+
+        # build backbone
+        self.backbone = get_backbone(cfg.BACKBONE.TYPE,
+                                     **cfg.BACKBONE.KWARGS)
+        # build disentangle
+        if cfg.DISENTANGLE.DISENTANGLE:
+            self.split = get_disentangle(cfg.DISENTANGLE.TYPE,
+                                         **cfg.DISENTANGLE.KWARGS)
+        # build reconstruction
+        if cfg.RECONSTRUCTION.RECONSTRUCTION:
+            self.reconstruct_img = get_decoder(cfg.RECONSTRUCTION.TYPE,
+                                               **cfg.RECONSTRUCTION.IKWARGS)
+            self.reconstruct_mask = get_decoder(cfg.RECONSTRUCTION.TYPE,
+                                                **cfg.RECONSTRUCTION.MKWARGS)
+        # build discriminator
+        if cfg.DISCRIMINATOR.DISCRIMINATOR:
+            self.discriminate = get_discriminator(cfg.DISCRIMINATOR.TYPE,
+                                                  **cfg.DISCRIMINATOR.KWARGS)
+        # build adjust layer
+        # if cfg.ADJUST.ADJUST:
+        #     self.neck = get_neck(cfg.ADJUST.TYPE,
+        #                          **cfg.ADJUST.KWARGS)
+
+        # build rpn head
+        # self.rpn_head = get_rpn_head(cfg.RPN.TYPE,
+        #                              **cfg.RPN.KWARGS)
+
+        # build mask head
+        # if cfg.MASK.MASK:
+        #     self.mask_head = get_mask_head(cfg.MASK.TYPE,
+        #                                    **cfg.MASK.KWARGS)
+
+            if cfg.REFINE.REFINE:
+                self.refine_head = get_refine_head(cfg.REFINE.TYPE)
+        self.unfold = nn.Unfold(kernel_size=(127, 127), stride=32)
+    def template(self, z):
+        zf = self.backbone(z)
+        if cfg.MASK.MASK:
+            zf = zf[-1]
+        if cfg.ADJUST.ADJUST:
+            zf = self.neck(zf)
+        self.zf = zf
+
+    def track(self, x):
+        xf = self.backbone(x)##extract feature
+
+        if cfg.MASK.MASK:
+            self.xf = xf[:-1]
+            xf = xf[-1]
+        if cfg.ADJUST.ADJUST:
+            xf = self.neck(xf)
+        cls, loc = self.rpn_head(self.zf, xf)
+        if cfg.MASK.MASK:
+            mask, self.mask_corr_feature = self.mask_head(self.zf, xf)
+        return {
+                'cls': cls,
+                'loc': loc,
+                # 'tem_feature':kernel,
+                # 'cls_feature': cls_feature,
+                'mask': mask if cfg.MASK.MASK else None
+               }
+
+    def mask_refine(self, pos):
+        return self.refine_head(self.xf, self.mask_corr_feature, pos)
+
+    def log_softmax(self, cls):
+        b, a2, h, w = cls.size()
+        cls = cls.view(b, 2, a2//2, h, w)
+        cls = cls.permute(0, 2, 3, 4, 1).contiguous()
+        cls = F.log_softmax(cls, dim=4)
+        return cls
+
+    def forward(self, data,idx):
+        """ only used in training
+        """
+        template = data['template'].cuda()
+        search = data['search'].cuda()
+        template_mask = data['template_mask'].cuda().permute(0,3,1,2)
+        search_mask = data['search_mask'].cuda().permute(0,3,1,2)
+        label_cls = data['label_cls'].cuda()
+        label_loc = data['label_loc'].cuda()
+        label_loc_weight = data['label_loc_weight'].cuda()
+        template_box = data['template_box']
+        batch_size = template.size(0)
+        # get feature
+        zf = self.backbone(template)
+        xf = self.backbone(search)
+
+        if cfg.DISENTANGLE.DISENTANGLE:
+            results = self.split(batch_size, zf, xf, template_box)
+        # if cfg.MASK.MASK:
+        #     zf = zf[-1]
+        #     self.xf_refine = xf[:-1]
+        #     xf = xf[-1]
+        if cfg.RECONSTRUCTION.RECONSTRUCTION:
+            k_reconsimg = self.reconstruct_img(results['reconstruct_kimg'])# mse?class loss
+            k_reconsmask = self.reconstruct_mask(results['k_mask_img'])
+        if cfg.DISCRIMINATOR.DISCRIMINATOR:
+            k_realscore = self.discriminate(template.detach()/255)
+            k_reconsscore = self.discriminate(k_reconsimg.detach())
+        # if cfg.ADJUST.ADJUST:
+        #     zf = self.neck(results['kernels_fg'])
+        #     xf = self.neck(results['searchs_fg'])
+        #cls, loc = self.rpn_head(zf, xf)
+
+        # get D_loss
+        device = torch.device("cuda")
+        real_label = torch.full((batch_size,), 1, device=device)
+        fake_label = torch.full((batch_size,), 0, device=device)
+        fusion_label = torch.cat([real_label[:8], fake_label[8:17], real_label[17:]], 0)
+        #repeat_size = ks_reconsimg.shape[0]//k_reconsimg.shape[0]
+        # D_loss
+
+        kr_d_loss = discriminate_loss(k_realscore, real_label)
+        kf_d_loss = discriminate_loss(k_reconsscore, fake_label)
+        D_loss = kr_d_loss + kf_d_loss
+
+        # get loss
+        # cls = self.log_softmax(cls)
+        # cls_loss = select_cross_entropy_loss(cls, label_cls)
+        # loc_loss = weight_l1_loss(loc, label_loc, label_loc_weight)
+
+
+        k_reconsimg_loss = pixel_wise_loss(k_reconsimg, template/255)
+        restruct_loss = k_reconsimg_loss
+        # mask_loss
+        #k_mask_img = results['k_mask_img']
+        # k_mask_img = F.log_softmax(k_reconsmask,dim=1)
+        k_mask_img = F.sigmoid(k_reconsmask[:,0,:,:])
+        k_mask_img = k_mask_img.view(k_mask_img.size(0),-1)
+        mask_gt =(template_mask[:,0,:,:]/255).view(template_mask.size(0),-1)
+        # mask_gt = mask_gt.to(torch.long)
+        mask_gt = mask_gt.to(torch.float)
+        # k_mask_loss = F.nll_loss(k_mask_img,mask_gt)
+        k_mask_loss = nn.BCELoss()(k_mask_img,mask_gt)
+        mask_loss = k_mask_loss
+
+
+        outputs = {}
+        #outputs['total_loss'] = cfg.TRAIN.CLS_WEIGHT * cls_loss + \
+        #    cfg.TRAIN.LOC_WEIGHT * loc_loss + restruct_loss + mask_loss
+        # outputs['cls_loss'] = cls_loss
+        # outputs['loc_loss'] = loc_loss
+        outputs['total_loss'] = restruct_loss + mask_loss
+
+        outputs['restruct_loss'] = restruct_loss
+        outputs['k_reconsimg_loss'] = k_reconsimg_loss
+
+        outputs['mask_loss'] = mask_loss
+        outputs['k_mask_loss'] = k_mask_loss
+
+        outputs['D_loss'] = D_loss
+        outputs['kr_d_loss'] = kr_d_loss
+        outputs['kf_d_loss'] = kf_d_loss
+
+
+        save_k_mask = (k_mask_img * 255)[0, 0, :, :].view(1, 127, 127)
+        save_k_mask = save_k_mask.detach().cpu().numpy().transpose(1, 2, 0)
+        save_k_mask = np.uint8(save_k_mask)
+        save_template_mask = data['template_mask'][0, :, :, :].detach().cpu().numpy()
+        save_template_mask = np.uint8(save_template_mask)
+        save_k_reconsimg = (k_reconsimg * 255)[0, :, :, :].detach().cpu().numpy()
+        save_k_reconsimg = np.uint8(save_k_reconsimg.transpose(1, 2, 0))
+        save_template = data['template'][0, :, :, :].detach().cpu().numpy()
+        save_template = np.uint8(save_template.transpose(1, 2, 0))
+        saveimage_path = './reconstruct_img_new1/'
+        if not os.path.exists(saveimage_path):
+            os.makedirs(saveimage_path)
+        if idx % 100 == 0:
+            cv2.imwrite(saveimage_path + '/template_{}.jpg'.format(idx), save_template)
+            cv2.imwrite(saveimage_path + '/k_reconsimg_{}.jpg'.format(idx), save_k_reconsimg)
+            cv2.imwrite(saveimage_path + '/k_mask_{}.jpg'.format(idx), save_k_mask)
+            cv2.imwrite(saveimage_path + '/template_mask_{}.jpg'.format(idx), save_template_mask)
+        # if cfg.MASK.MASK:
+        #     # TODO
+        #     mask, self.mask_corr_feature = self.mask_head(zf, xf)
+        #     mask_loss = None
+        #     outputs['total_loss'] += cfg.TRAIN.MASK_WEIGHT * mask_loss
+        #     outputs['mask_loss'] = mask_loss
+        loss = outputs['total_loss'].mean()
+
+        return outputs
