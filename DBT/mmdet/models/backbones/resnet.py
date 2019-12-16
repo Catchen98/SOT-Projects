@@ -1,5 +1,5 @@
 import logging
-
+from IPython import embed
 import torch.nn as nn
 import torch.utils.checkpoint as cp
 from mmcv.cnn import constant_init, kaiming_init
@@ -504,6 +504,7 @@ class ResNet(nn.Module):
             raise TypeError('pretrained must be a str or None')
 
     def forward(self, x):
+        # embed()
         x = self.conv1(x)
         x = self.norm1(x)
         x = self.relu(x)

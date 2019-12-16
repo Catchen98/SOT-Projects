@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=4 python tools/train_stsn_r101.py configs/faster_rcnn_r101_fpn_stsn_1x.py --work_dir snapshot/test/

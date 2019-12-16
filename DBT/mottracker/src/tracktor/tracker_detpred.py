@@ -371,7 +371,7 @@ class Tracker(BaseDetector, RPNTestMixin, BBoxTestMixin,
 				nms_track_pos = torch.cat([t.pos, det_pos])
 				nms_track_scores = torch.cat(
 					[torch.tensor([2.0]).to(det_scores.device), det_scores])
-				keep = nms(nms_track_pos, nms_track_scores, self.detection_nms_thresh)
+				keep = nms(nms_track_pos, nms_track_scores, self.detection_person_thresh)#detection_nms_thresh
 
 				keep = keep[torch.ge(keep, 1)] - 1
 				

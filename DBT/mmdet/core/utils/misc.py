@@ -1,5 +1,5 @@
 from functools import partial
-
+from IPython import embed
 import mmcv
 import numpy as np
 from six.moves import map, zip
@@ -21,8 +21,14 @@ def tensor2imgs(tensor, mean=(0, 0, 0), std=(1, 1, 1), to_rgb=True):
 def multi_apply(func, *args, **kwargs):
     pfunc = partial(func, **kwargs) if kwargs else func
     map_results = map(pfunc, *args)
+    
     return tuple(map(list, zip(*map_results)))
 
+def stsnmulti_apply(func, *args, **kwargs):
+    pfunc = partial(func, **kwargs) if kwargs else func
+    map_results = map(pfunc, *args)
+    
+    return tuple(map_results)
 
 def unmap(data, count, inds, fill=0):
     """ Unmap a subset of item (data) back to the original set of items (of

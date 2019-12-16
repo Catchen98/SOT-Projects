@@ -1,11 +1,15 @@
 import torch
 import torch.nn as nn
+from functools import  partial
 from IPython import embed
+import random
 from mmdet.core import bbox2result, bbox2roi, build_assigner, build_sampler
 from .. import builder
 from ..registry import DETECTORS
 from .base import BaseDetector
 from .test_mixins import BBoxTestMixin, MaskTestMixin, RPNTestMixin
+from mmdet.core import (AnchorGenerator, anchor_target, delta2bbox, force_fp32,
+                        multi_apply, stsnmulti_apply, multiclass_nms)
 # from torchvision.models.detection.transform import GeneralizedRCNNTransform
 
 @DETECTORS.register_module
@@ -15,6 +19,7 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
     def __init__(self,
                  backbone,
                  neck=None,
+                 agg=None,
                  shared_head=None,
                  rpn_head=None,
                  bbox_roi_extractor=None,
@@ -29,6 +34,9 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
 
         if neck is not None:
             self.neck = builder.build_neck(neck)
+        
+        if agg is not None:
+            self.agg=builder.build_agg(agg)
 
         if shared_head is not None:
             self.shared_head = builder.build_shared_head(shared_head)
@@ -55,7 +63,7 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
         self.test_cfg = test_cfg
 
         self.init_weights(pretrained=pretrained)
-        
+        self.support = None
     @property
     def with_rpn(self):
         return hasattr(self, 'rpn_head') and self.rpn_head is not None
@@ -69,6 +77,8 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
                     m.init_weights()
             else:
                 self.neck.init_weights()
+        if self.with_agg:
+            self.agg.init_weights()
         if self.with_shared_head:
             self.shared_head.init_weights(pretrained=pretrained)
         if self.with_rpn:
@@ -124,13 +134,43 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
                       gt_bboxes_ignore=None,
                       gt_masks=None,
                       proposals=None):
+
         x = self.extract_feat(img)
-
+        for i in range(len(x)):
+            print('backbone:',torch.isnan(x[i]).any())
+        # embed()
+        feature_rpn=x
+        feature_roi=x
+        if self.with_agg:
+            # support_ids=[]
+            # for reference_id in range(len(x[0])):
+            #     support_id=random.randint(0,4)
+            #     while img_meta[reference_id]['filename'].split('/')[-2] != \
+            #         img_meta[support_id]['filename'].split('/')[-2]:
+            #         support_id=random.randint(0,4)
+            #     support_ids.append(support_id)
+            # support_ids=tuple([support_ids for _ in range(5)])
+            
+            agg_features = stsnmulti_apply(self.agg,x)
+            # embed()
+            feature_rpn=[]
+            feature_roi=[]
+            for i,agg_feature in enumerate(agg_features):
+                feature_rpn.append(agg_feature[0])
+                feature_roi.append(agg_feature[1])
+            feature_rpn=tuple(feature_rpn)
+            feature_roi=tuple(feature_roi)
+            # self.support=x
+            # x=agg_features
+            # split=x[0].shape[1]//2
+            # feature_rpn=x[:,:split,:,:]
+            # feature_roi=x[:,-split:,:,:]
+            img=img[1:,:,:,:].clone()
         losses = dict()
-
+        
         # RPN forward and loss
         if self.with_rpn:
-            rpn_outs = self.rpn_head(x)
+            rpn_outs = self.rpn_head(feature_rpn)
             rpn_loss_inputs = rpn_outs + (gt_bboxes, img_meta,
                                           self.train_cfg.rpn)
             rpn_losses = self.rpn_head.loss(
@@ -169,13 +209,17 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
         # bbox head forward and loss
         if self.with_bbox:
             rois = bbox2roi([res.bboxes for res in sampling_results])
+            # print('rois:',rois)
+            # embed()
             # TODO: a more flexible way to decide which feature maps to use
             bbox_feats = self.bbox_roi_extractor(
-                x[:self.bbox_roi_extractor.num_inputs], rois)
+                feature_roi[:self.bbox_roi_extractor.num_inputs], rois)
+            print('bbox_feats:',torch.isnan(bbox_feats).any())
             if self.with_shared_head:
                 bbox_feats = self.shared_head(bbox_feats)
+            
             cls_score, bbox_pred = self.bbox_head(bbox_feats)
-
+            
             bbox_targets = self.bbox_head.get_target(sampling_results,
                                                      gt_bboxes, gt_labels,
                                                      self.train_cfg.rcnn)
@@ -227,25 +271,23 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
         
         x = self.extract_feat(img)
         # proposal 1000*5
-        # print('simple_test')
-        # embed()
-        # exit()
+            
         proposal_list = self.simple_test_rpn(
-            x, img_meta, self.test_cfg.rpn) if proposals is None else proposals
+                x, img_meta, self.test_cfg.rpn) if proposals is None else proposals
         # print('proposal_list:',len(proposal_list),proposal_list[0].shape)
         #det_bboxes 11*5 det_labels 11*1
         det_bboxes, det_labels = self.simple_test_bboxes(
-            x, img_meta, proposal_list, rcnn_test_cfg=self.test_cfg.rcnn, rescale=rescale)
+                x, img_meta, proposal_list, rcnn_test_cfg=self.test_cfg.rcnn, rescale=rescale)
         # print('two stage')
         # embed()
         # bbox_results 9 n*5
-        # bbox_results = bbox2result(det_bboxes, det_labels,
-        #                            self.bbox_head.num_classes)
+        bbox_results = bbox2result(det_bboxes, det_labels,
+                                self.bbox_head.num_classes)
         
         
-        if not self.with_mask:
-            # return bbox_results
-            return det_bboxes,det_labels
+        if not self.with_mask:  
+            return bbox_results
+            # return det_bboxes,det_labels
             # return bbox_results,det_labels
         else:
             segm_results = self.simple_test_mask(
@@ -340,3 +382,30 @@ class TwoStageDetector(BaseDetector, RPNTestMixin, BBoxTestMixin,
             return bbox_results, segm_results
         else:
             return bbox_results
+    def test_stsn(self, x, img_meta, proposals=None, rescale=False):
+        """Test without augmentation."""
+        assert self.with_bbox, "Bbox head must be implemented."
+        
+        # proposal 1000*5
+            
+        proposal_list = self.simple_test_rpn(
+                x, img_meta, self.test_cfg.rpn) if proposals is None else proposals
+        # print('proposal_list:',len(proposal_list),proposal_list[0].shape)
+        #det_bboxes 11*5 det_labels 11*1
+        det_bboxes, det_labels = self.simple_test_bboxes(
+                x, img_meta, proposal_list, rcnn_test_cfg=self.test_cfg.rcnn, rescale=rescale)
+        # print('two stage')
+        # embed()
+        # bbox_results 9 n*5
+        bbox_results = bbox2result(det_bboxes, det_labels,
+                                self.bbox_head.num_classes)
+        
+        
+        if not self.with_mask:  
+            return bbox_results
+            # return det_bboxes,det_labels
+            # return bbox_results,det_labels
+        else:
+            segm_results = self.simple_test_mask(
+                x, img_meta, det_bboxes, det_labels, rescale=rescale)
+            return bbox_results, segm_results

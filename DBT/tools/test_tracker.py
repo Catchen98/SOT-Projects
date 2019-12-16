@@ -127,8 +127,8 @@ def main():
     start = time.time()
 
     # log.info(f"Tracking")
-    with open(os.path.join(data_path,json_name),'r',encoding='utf-8') as f:
-	    datas=json.load(f)
+    # with open(os.path.join(data_path,json_name),'r',encoding='utf-8') as f:
+	#     datas=json.load(f)
     prevideo_name=None
     eval_data=[]
     for i, image in enumerate(tqdm(data_loader)):

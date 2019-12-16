@@ -1,7 +1,7 @@
 from torch import nn
 from IPython import embed
 from mmdet.utils import build_from_cfg
-from .registry import (BACKBONES, DETECTORS, HEADS, LOSSES, NECKS,
+from .registry import (BACKBONES, AGG, DETECTORS, HEADS, LOSSES, NECKS,
                        ROI_EXTRACTORS, SHARED_HEADS)
 
 
@@ -24,6 +24,8 @@ def build_backbone(cfg):
 def build_neck(cfg):
     return build(cfg, NECKS)
 
+def build_agg(cfg):
+    return build(cfg, AGG)
 
 def build_roi_extractor(cfg):
     return build(cfg, ROI_EXTRACTORS)

@@ -23,6 +23,10 @@ class BaseDetector(nn.Module):
         return hasattr(self, 'neck') and self.neck is not None
 
     @property
+    def with_agg(self):
+        return hasattr(self, 'agg') and self.agg is not None
+    
+    @property
     def with_shared_head(self):
         return hasattr(self, 'shared_head') and self.shared_head is not None
 
@@ -80,8 +84,8 @@ class BaseDetector(nn.Module):
         # print(type(imgs[0]))
         # embed()
         if num_augs == 1:
-            boxes,scores=self.simple_test(imgs[0], img_metas[0], **kwargs)
-            return boxes,scores
+            
+            return self.simple_test(imgs[0], img_metas[0], **kwargs)
         else:
             return self.aug_test(imgs, img_metas, **kwargs)
     def predict_boxes(self,img,pos):
