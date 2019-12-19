@@ -38,7 +38,7 @@ class STSN(nn.Module):
                             padding=1,dilation=1,deformable_groups=self.deformable_groups,bias=False)
         self.conv4_offset = nn.Conv2d(in_channels,self.deformable_groups * offset_channels,
                             kernel_size=3,stride=1,padding=1,dilation=1)
-        self.conv4 = conv_op(in_channels//2,out_channels,kernel_size=3,stride=1,
+        self.conv4 = conv_op(out_channels,out_channels,kernel_size=3,stride=1,
                             padding=1,dilation=1,deformable_groups=self.deformable_groups,bias=False)
         self.relu=nn.LeakyReLU(inplace=True)
         self.norm1 = nn.GroupNorm(32,in_channels)
@@ -84,63 +84,61 @@ class STSN(nn.Module):
         agg_features1=self.conv1(features,offset1)
         agg_features1=self.norm1(agg_features1)
         agg_features1=self.relu(agg_features1)
-        print('agg1',torch.isnan(agg_features1).any())
+        # print('agg1_nan',torch.isnan(agg_features1).any())
+        # print('agg1_inf',torch.isinf(agg_features1).any())
         offset2=self.conv2_offset(agg_features1)
         # self.offset2=offset2
         agg_features2=self.conv2(agg_features1,offset2)
         agg_features2=self.norm2(agg_features2)
         agg_features2=self.relu(agg_features2)
-        print('agg2',torch.isnan(agg_features2).any())
+        # print('agg2_nan',torch.isnan(agg_features2).any())
+        # print('agg2_inf',torch.isinf(agg_features2).any())
         offset3=self.conv3_offset(agg_features2)
         # self.offset3=offset3
         agg_features3=self.conv3(agg_features2,offset3)
         agg_features3=self.norm3(agg_features3)
         agg_features3=self.relu(agg_features3)
-        print('agg3',torch.isnan(agg_features3).any())
+        # print('agg3_nan',torch.isnan(agg_features3).any())
+        # print('agg3_inf',torch.isinf(agg_features3).any())
         offset4=self.conv4_offset(agg_features3)
+        # print('offset4_nan',torch.isnan(offset4).any())
+        # print('support',torch.isnan(support).any())
         # self.offset4=offset4
         agg_features=self.conv4(support,offset4)
+        # print('agg_f4_nan',torch.isnan(agg_features).any())
+        # print('agg_f4_inf',torch.isinf(agg_features).any())
+        # print(agg_features)
         agg_features=self.norm4(agg_features)
+        # print('agg_f4_2',torch.isnan(agg_features).any())
         agg_features=self.relu(agg_features)
+        # print('agg_f4_3',torch.isnan(agg_features).any())
         # print('agg4',agg_features)
         return agg_features
 
     def forward(self,datas):
-        # embed()
-        # print(datas.shape)
+        # split=datas.shape[0]//2
+        # reference=datas[:split,:,:,:]+0
+        # support=datas[split:,:,:,:]+0
         reference=datas+0
         shuffle_id=np.random.randint(low=0,high=reference.shape[0],size=reference.shape[0])
         support=datas[shuffle_id,:,:,:]+0
-        # print(datas.shape)
+        
         tt_feature=self.agg(reference,reference)
-        print('tt_feature',torch.isnan(tt_feature).any())
         stt=self.neck(tt_feature)
-        # stt=tt_feature
-        # ttweight=torch.exp(self.similarity(torch.cat([stt,stt],dim=1)).unsqueeze(1))#(b,1,w,h)
         ttweight=torch.exp(torch.cosine_similarity(stt,stt,dim=1).unsqueeze(1))
-        print('ttweight',torch.isnan(ttweight).any())
+        
         tk_feature=self.agg(support,reference)
-        print('tk_feature',torch.isnan(tk_feature).any())
         stk=self.neck(tk_feature)
-        # stk=tk_feature
-        # tkweight=torch.exp(self.similarity(torch.cat([stt,stk],dim=1)).unsqueeze(1))
         tkweight=torch.exp(torch.cosine_similarity(stt,stk,dim=1).unsqueeze(1))
-        print('tkweight',torch.isnan(tkweight).any())
+        
         weights=torch.cat([ttweight.unsqueeze(0),tkweight.unsqueeze(0)],dim=0)#(2,b,1,w,h)
         weights=F.softmax(weights,dim=0)
         
         features=torch.cat([tt_feature.unsqueeze(0),tk_feature.unsqueeze(0)],dim=0)#(2,b,c,w,h)
         agg_features=torch.sum(weights*features,dim=0)#(b,c,w,h)
-        # print(agg_features.shape)
-        # return agg_features
-        # embed()
-        # exit()
-        split=agg_features.shape[1]//2
-        feature_rpn=agg_features[:,:split,:,:].contiguous()
-        feature_roi=agg_features[:,-split:,:,:].contiguous()
-        return feature_rpn,feature_roi
-        # return stt
-    def test_stsn(self,support,reference):
+        
+        return agg_features
+    def stsn(self,support,reference):
         
         tt_feature=self.agg(reference,reference)
         stt=self.neck(tt_feature)
@@ -149,7 +147,7 @@ class STSN(nn.Module):
         tk_feature=self.agg(support,reference)
         stk=self.neck(tk_feature)
         # stk=tk_feature
-        tkweight=torch.cosine_similarity(stt,stk,dim=1).unsqueeze(1)
+        tkweight=torch.exp(torch.cosine_similarity(stt,stk,dim=1).unsqueeze(1))
         # print(tkweight.max(),tkweight.min())
         
         return tkweight

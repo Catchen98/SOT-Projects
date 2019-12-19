@@ -54,7 +54,9 @@ class BaseDetector(nn.Module):
     @abstractmethod
     def simple_test(self, img, img_meta, **kwargs):
         pass
-
+    @abstractmethod
+    def test_stsn(self, x, img_meta, proposals=None, rescale=False):
+        pass
     @abstractmethod
     def aug_test(self, imgs, img_metas, **kwargs):
         pass
@@ -97,7 +99,7 @@ class BaseDetector(nn.Module):
         else:
             return self.forward_test(img, img_meta, **kwargs)
 
-    def show_result(self, data, result, dataset=None, score_thr=0.3):
+    def show_result(self, data, result, dataset=None, score_thr=0.3):#0.3
         if isinstance(result, tuple):
             bbox_result, segm_result = result
         else:

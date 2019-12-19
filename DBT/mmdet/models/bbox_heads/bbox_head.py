@@ -141,7 +141,8 @@ class BBoxHead(nn.Module):
         if isinstance(cls_score, list):
             cls_score = sum(cls_score) / float(len(cls_score))
         scores = F.softmax(cls_score, dim=1) if cls_score is not None else None
-
+        # print('bbox_head')
+        # embed()
         if bbox_pred is not None:
             bboxes = delta2bbox(rois[:, 1:], bbox_pred, self.target_means,
                                 self.target_stds, img_shape)
@@ -156,8 +157,7 @@ class BBoxHead(nn.Module):
                 bboxes /= scale_factor
             else:
                 bboxes /= torch.from_numpy(scale_factor).to(bboxes.device)
-        # print('get_box')
-        # embed()
+        
         if cfg is None:
             return bboxes, scores
         elif cfg.score_thr==0.05:
@@ -168,7 +168,8 @@ class BBoxHead(nn.Module):
             det_bboxes, det_labels = multiclass_selfnms(bboxes, scores,
                                                     cfg.score_thr, cfg.nms,
                                                     cfg.max_per_img)
-
+        # print('get_box')
+        # embed()
         return det_bboxes, det_labels
 
         

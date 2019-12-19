@@ -42,6 +42,7 @@ def build_dataloader(dataset,
         sampler=sampler,
         num_workers=num_workers,
         collate_fn=partial(collate, samples_per_gpu=imgs_per_gpu),
+        drop_last=True,
         pin_memory=False,
         **kwargs)
 
